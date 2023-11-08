@@ -1,6 +1,8 @@
 const express = require('express');
 require('dotenv').config()
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+var cookieParser = require('cookie-parser')
 const app = express();
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
@@ -17,8 +19,15 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 // app.use(cors(corsConfig))
 // app.options("", cors(corsConfig))
 
-app.use(cors());
+app.use(cors({
+  
+  origin: ['http://localhost:5173', 'https://study-point-auth-1dfbf.web.app'],
+  credentials: true,
+  optionSucessStatus:200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE','PATCH','OPTIONS']
+}));
 app.use(express.json());
+app.use(cookieParser());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.xe6z2zy.mongodb.net/?retryWrites=true&w=majority`;
 
@@ -31,21 +40,145 @@ const client = new MongoClient(uri, {
   }
 });
 
+const verifyToken = async(req,res,next)=>{
+  const token = req.cookies?.token;
+  console.log('token',token);
+  if(!token){
+    return res.status(401).send({message:'Not authorized'})
+
+  }
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err,decoded)=>{
+    if(err){
+      return res.status(401).send({message:'unauthorized'})
+    }
+    console.log('value in the token', decoded);
+    req.user = decoded;
+    next();
+  })
+  
+}
+
+
 async function run() {
   try {
 
     // Connect the client to the server	(optional starting in v4.7)
     // await client.connect ()
 
-    const productCollection = client.db('productDB').collection('product');
-    const myCartProductsCollection = client.db('productDB').collection('myCartProducts');
-    const brandCollection = client.db('productDB').collection('brands');
-
-    app.get('/product',async(req,res)=>{
-        const cursor = productCollection.find();
-        const result = await cursor.toArray();
-        res.send(result);   
+    const assignmentCollection = client.db('assignmentDB').collection('assignments');
+    const subAssignmentCollection = client.db('assignmentDB').collection('submittedAssignments');
+    // auth related api
+    app.post('/jwt', async(req,res) =>{
+      const user= req.body;
+      console.log(user);
+      const token =jwt.sign(user,process.env.ACCESS_TOKEN_SECRET,{expiresIn: '1h'})
+      res
+      .cookie('token',token,{
+        httpOnly: true,
+        secure: false,
+      })
+      .send({success: true});
     })
+    // assignments
+    app.get('/assignments',async(req,res)=>{
+        console.log(req.query);
+        const page= parseInt(req.query.page);
+        const size= parseInt(req.query.size);
+        const difficulty= req.query.difficulty;
+        console.log(difficulty);
+
+        if(difficulty=='All'){
+          const count = (await assignmentCollection.find().toArray()).length;
+          const cursor = assignmentCollection.find()
+          .skip(page*size)
+          .limit(size);
+          const result = await cursor.toArray();
+          res.send({result,count});
+        }else{
+          const query = {difficulty: difficulty};
+          const count = (await assignmentCollection.find(query).toArray()).length;
+          const cursor = assignmentCollection.find(query)
+          .skip(page*size)
+          .limit(size);
+          const result = await cursor.toArray();
+          res.send({result,count});
+        }
+           
+    })
+    app.get('/assignmentsCount',async(req,res)=>{
+        const count = assignmentCollection.estimatedDocumentCount()
+        res.send({count});   
+    })
+    app.post('/assignments',async(req,res)=>{
+      const newAssignment = req.body;
+      console.log('User in the valid token',req.user);
+      console.log(newAssignment);
+      const result = await assignmentCollection.insertOne(newAssignment);
+      res.send(result);
+    })
+    app.get('/assignments/:id', async(req,res)=>{
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)}
+      const result = await assignmentCollection.findOne(query);
+      res.send(result); 
+    })
+    app.put('/assignments/:id', async(req,res)=>{
+      const id = req.params.id;
+      const filter = {_id: new ObjectId(id)}
+      const options = {upsert: true};
+      const updatedAssignment= req.body;
+      const assignment = {
+          $set: {
+              title:updatedAssignment.title,
+              image:updatedAssignment.image,
+              marks:updatedAssignment.marks,
+              difficulty:updatedAssignment.difficulty,
+              date:updatedAssignment.date,
+              email:updatedAssignment.email,
+              description:updatedAssignment.description
+
+          }
+      }
+      const result = await assignmentCollection.updateOne(filter, assignment, options);
+      res.send(result); 
+    })
+    app.delete('/assignments/:id', async(req,res)=>{
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)}
+      const result = await assignmentCollection.deleteOne(query);
+      res.send(result); 
+    })
+
+    // submittedAssignments
+    app.get('/submittedAssignments', async(req,res)=>{
+      const cursor = subAssignmentCollection.find();
+      const result = await cursor.toArray();
+      res.send(result);   
+    })
+    app.post('/submittedAssignments', async(req,res)=>{
+      const newSubAssignment = req.body;
+      console.log(newSubAssignment);
+      const result = await subAssignmentCollection.insertOne(newSubAssignment);
+      res.send(result);
+    })
+    app.patch('/submittedAssignments/:id', async(req,res)=>{
+      const id = req.params.id;
+      const filter = {_id: new ObjectId(id)}
+      const updatedSubAssignment= req.body;
+      const updatedAssignment = {
+          $set: {
+            obtainedMarks:updatedSubAssignment.obtainedMarks,
+            feedback:updatedSubAssignment.feedback,
+            status:updatedSubAssignment.status,
+
+          }
+      }
+      const result = await subAssignmentCollection.updateOne(filter, updatedAssignment);
+      res.send(result); 
+    })
+
+
+
     app.get('/product/:id', async(req,res)=>{
         const id = req.params.id;
         const query = {_id: new ObjectId(id)}
@@ -124,7 +257,7 @@ run().catch(console.dir);
 
 
 app.get('/', (req,res) =>{
-    res.send('Fahim gadgets server is running')
+    res.send('Study Point server is running')
 })
 
 app.listen(port, ()=>{
